@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
+from zipfile import ZipFile
 
 import pandas as pd
 
@@ -24,6 +25,28 @@ _UMLAUT_MAP = {
     "u": "ü",
     "U": "Ü",
 }
+
+_METADATA_COLUMN_MAP = {
+    "cdnr": "volume",
+    "filenr": "speaker_number",
+    "diaclass": "dialect_class",
+    "diareg": "dialect_region",
+    "age": "age",
+    "sex": "sex",
+    "height": "height_cm",
+    "weight": "weight_kg",
+    "born": "birth_location",
+    "time": "longest_residence_location",
+    "parents": "parents_dialect_relation",
+    "mother": "mother_origin",
+    "father": "father_origin",
+    "school": "education_level",
+    "profession": "profession",
+    "diaself": "dialect_self",
+}
+
+_METADATA_COLUMNS = list(_METADATA_COLUMN_MAP.values())
+_SPEAKER_METADATA_CACHE: Optional[dict[str, dict[str, Optional[str]]]] = None
 
 
 def _replace_umlaut(match: re.Match[str]) -> str:
@@ -72,6 +95,75 @@ def _read_trl_transcription(trl_path: Path) -> Optional[str]:
     if ":" in joined:
         _, joined = joined.split(":", 1)
     return _clean_trl_text(joined)
+
+
+def _normalise_metadata_value(value: str) -> Optional[str]:
+    value = value.strip()
+    if not value or value == "-":
+        return None
+    value = _RE_UMlaut.sub(_replace_umlaut, value)
+    value = _RE_ESZETT.sub(_replace_eszett, value)
+    value = value.replace('"', "")
+    value = _RE_WHITESPACE.sub(" ", value).strip()
+    return value or None
+
+
+def _load_speaker_metadata(dataset_root: Path) -> dict[str, dict[str, Optional[str]]]:
+    global _SPEAKER_METADATA_CACHE
+    if _SPEAKER_METADATA_CACHE is not None:
+        return _SPEAKER_METADATA_CACHE
+
+    candidate_files = [
+        dataset_root / "table" / "sprk_att.txt",
+        dataset_root / "RVG1Docu" / "table" / "sprk_att.txt",
+    ]
+
+    raw_lines: Optional[List[str]] = None
+    for candidate in candidate_files:
+        if candidate.is_file():
+            raw_lines = candidate.read_text(encoding="latin-1").splitlines()
+            break
+
+    if raw_lines is None:
+        zip_path = dataset_root / "CLARINDocu.zip"
+        if zip_path.is_file():
+            with ZipFile(zip_path) as zf:
+                for member in ("table/sprk_att.txt", "RVG1Docu/table/sprk_att.txt"):
+                    if member in zf.namelist():
+                        with zf.open(member) as fh:
+                            raw_lines = fh.read().decode("latin-1").splitlines()
+                        break
+
+    if not raw_lines:
+        _SPEAKER_METADATA_CACHE = {}
+        return _SPEAKER_METADATA_CACHE
+
+    header = [col.strip() for col in raw_lines[0].split("\t")]
+    index_map = {name: idx for idx, name in enumerate(header)}
+
+    metadata: dict[str, dict[str, Optional[str]]] = {}
+    for row in raw_lines[1:]:
+        if not row.strip():
+            continue
+        parts = row.split("\t")
+        filenr_idx = index_map.get("filenr")
+        if filenr_idx is None or filenr_idx >= len(parts):
+            continue
+        speaker_raw = parts[filenr_idx].strip()
+        if not speaker_raw:
+            continue
+        speaker_id = speaker_raw.zfill(3)
+
+        entry: dict[str, Optional[str]] = {}
+        for source_key, target_key in _METADATA_COLUMN_MAP.items():
+            idx = index_map.get(source_key)
+            value = parts[idx] if idx is not None and idx < len(parts) else ""
+            entry[target_key] = _normalise_metadata_value(value)
+
+        metadata[speaker_id] = entry
+
+    _SPEAKER_METADATA_CACHE = metadata
+    return metadata
 
 
 def _clean_ort_token(token: str) -> str:
@@ -234,7 +326,7 @@ def _resolve_audio_path(speaker_dir: Path, channel: str) -> Optional[Path]:
 def load_sp1_dataframe(
     dataset_root: Path | str | None = None,
     *,
-    channel: str = "a",
+    channel: str = "c",
 ) -> pd.DataFrame:
     """Return a DataFrame with SP1 audio paths and ground truth transcriptions.
 
@@ -251,7 +343,7 @@ def load_sp1_dataframe(
     -------
     pandas.DataFrame
         Columns: ``speaker_id``, ``audio_path``, ``transcription``,
-        ``dialect_gt_transcription``.
+        ``dialect_gt_transcription`` plus speaker metadata.
     """
     if channel.lower() not in {"a", "b", "c", "d"}:
         raise ValueError("channel must be one of 'a', 'b', 'c', or 'd'")
@@ -263,7 +355,9 @@ def load_sp1_dataframe(
             "DATASETS_PATH environment variable."
         )
 
-    rows: List[Tuple[str, str, str, Optional[str]]] = []
+    speaker_metadata = _load_speaker_metadata(root)
+
+    rows: List[dict[str, object]] = []
     for speaker_dir in _iter_speaker_directories(root):
         speaker_id = speaker_dir.name
         audio_path = _resolve_audio_path(speaker_dir, channel)
@@ -279,19 +373,27 @@ def load_sp1_dataframe(
         if not transcription:
             continue
 
-        rows.append(
-            (
-                speaker_id,
-                str(audio_path),
-                transcription,
-                dialect_transcription,
-            )
-        )
+        row: dict[str, object] = {
+            "speaker_id": speaker_id,
+            "audio_path": str(audio_path),
+            "transcription": transcription,
+            "dialect_gt_transcription": dialect_transcription,
+        }
 
-    return pd.DataFrame(
-        rows,
-        columns=["speaker_id", "audio_path", "transcription", "dialect_gt_transcription"],
-    )
+        metadata_entry = speaker_metadata.get(speaker_id, {})
+        for column in _METADATA_COLUMNS:
+            row[column] = metadata_entry.get(column) if metadata_entry else None
+
+        rows.append(row)
+
+    columns = [
+        "speaker_id",
+        "audio_path",
+        "transcription",
+        "dialect_gt_transcription",
+        *_METADATA_COLUMNS,
+    ]
+    return pd.DataFrame(rows, columns=columns)
 
 
 __all__ = ["load_sp1_dataframe"]
