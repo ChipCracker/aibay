@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import warnings
 from pathlib import Path
 from typing import Iterable, Optional, Union
@@ -87,6 +88,13 @@ def load_whisper_model(
         pipeline_kwargs["ignore_warning"] = ignore_warning
 
     pipe = pipeline("automatic-speech-recognition", **pipeline_kwargs)
+
+    # Clear deprecated forced decoder ids so that language/task flags control generation fully.
+    generation_config = getattr(pipe.model, "generation_config", None)
+    if generation_config is not None:
+        generation_config.forced_decoder_ids = None
+    if getattr(pipe.model, "config", None) is not None:
+        pipe.model.config.forced_decoder_ids = None
 
     if generate_kwargs:
         existing_kwargs = _sanitize_generate_kwargs(getattr(pipe, "generate_kwargs", {}))
@@ -229,16 +237,44 @@ def add_wer_column(
     """Attach a WER column using ``jiwer``."""
     _ensure_package("jiwer", "Install it via `pip install jiwer`.")  # pragma: no cover
 
-    from jiwer import Compose, RemoveMultipleSpaces, ReplaceRegex, Strip, ToLowerCase, wer
+    from jiwer import wer
 
-    transform = normalizer or Compose(
-        [
-            ReplaceRegex(r"-", " "),
-            ToLowerCase(),
-            RemoveMultipleSpaces(),
-            Strip(),
-        ]
-    )
+    transform = normalizer
+    fallback = None
+    if transform is None:
+        try:
+            from jiwer import Compose, RemoveMultipleSpaces, ReplaceRegex, Strip, ToLowerCase
+
+            transform = Compose(
+                [
+                    ReplaceRegex(r"-", " "),
+                    ToLowerCase(),
+                    RemoveMultipleSpaces(),
+                    Strip(),
+                ]
+            )
+        except (ImportError, AttributeError):
+            try:
+                from jiwer import Compose, RemoveMultipleSpaces, Strip, ToLowerCase
+
+                transform = Compose(
+                    [
+                        ToLowerCase(),
+                        RemoveMultipleSpaces(),
+                        Strip(),
+                    ]
+                )
+                fallback = re.compile(r"-")
+            except (ImportError, AttributeError):
+                fallback = re.compile(r"-")
+
+    def _normalize_text(text: str) -> str:
+        if transform is not None:
+            return transform(text)
+        text = fallback.sub(" ", text) if fallback else text
+        text = text.lower()
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
     df_with_wer = df.copy()
     scores: list[Optional[float]] = []
@@ -247,14 +283,17 @@ def add_wer_column(
         if truth is None or hypo is None:
             scores.append(None)
             continue
-        scores.append(
-            wer(
-                str(truth),
-                str(hypo),
-                truth_transform=transform,
-                hypothesis_transform=transform,
+        if transform is not None:
+            scores.append(
+                wer(
+                    str(truth),
+                    str(hypo),
+                    truth_transform=transform,
+                    hypothesis_transform=transform,
+                )
             )
-        )
+        else:
+            scores.append(wer(_normalize_text(str(truth)), _normalize_text(str(hypo))))
 
     df_with_wer[output_column] = scores
     return df_with_wer
