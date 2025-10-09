@@ -139,7 +139,11 @@ def transcribe_dataframe(
     This function does not mutate the input DataFrame; a copy is returned.
     """
     transcribe_kwargs = _sanitize_generate_kwargs(transcribe_kwargs)
-    effective_generate_kwargs = {"task": "transcribe", **_sanitize_generate_kwargs(generate_kwargs)}
+    effective_generate_kwargs = {
+        "task": "transcribe",
+        "language": "de",
+        **_sanitize_generate_kwargs(generate_kwargs),
+    }
 
     if model is None:
         whisper_pipe = load_whisper_model(
