@@ -342,7 +342,7 @@ def load_sp1_dataframe(
     Returns
     -------
     pandas.DataFrame
-        Columns: ``speaker_id``, ``audio_path``, ``transcription``,
+        Columns: ``speaker_id``, ``audio_path``, ``gt_transcription``,
         ``dialect_gt_transcription`` plus speaker metadata.
     """
     if channel.lower() not in {"a", "b", "c", "d"}:
@@ -376,7 +376,7 @@ def load_sp1_dataframe(
         row: dict[str, object] = {
             "speaker_id": speaker_id,
             "audio_path": str(audio_path),
-            "transcription": transcription,
+            "gt_transcription": transcription,
             "dialect_gt_transcription": dialect_transcription,
         }
 
@@ -389,7 +389,7 @@ def load_sp1_dataframe(
     columns = [
         "speaker_id",
         "audio_path",
-        "transcription",
+        "gt_transcription",
         "dialect_gt_transcription",
         *_METADATA_COLUMNS,
     ]
