@@ -8,6 +8,7 @@ from typing import Callable, Dict
 import pandas as pd
 
 from datasets.BAS_RVG1 import load_sp1_dataframe
+from datasets.BAS_SC1 import load_sc1_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
 
 
@@ -15,11 +16,14 @@ def _load_bas_rvg1() -> pd.DataFrame:
     """Load BAS RVG1 SP1 data with ground-truth transcriptions."""
     return load_sp1_dataframe()
 
+def _load_bas_sc1() -> pd.DataFrame:
+    """Load BAS SC1 data with ground-truth transcriptions."""
+    return load_sc1_dataframe()
+
 
 DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
     "bas_rvg1": _load_bas_rvg1,
-    # Extend here with additional datasets, e.g.:
-    # "another_dataset": load_another_dataset_dataframe,
+    "bas_sc1": _load_bas_sc1,
 }
 
 
@@ -50,8 +54,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs") / "transcriptions.csv",
-        help="Destination file for the result DataFrame (CSV).",
+        default=None,
+        help="Destination CSV file. Defaults to outputs/<dataset>.csv.",
     )
     parser.add_argument(
         "--no-write",
@@ -69,8 +73,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_write:
         print(df.head())
     else:
-        write_output(df, args.output)
-        print(f"Wrote results to {args.output}")
+        output_path = args.output or Path("outputs") / f"{args.dataset}.csv"
+        write_output(df, output_path)
+        print(f"Wrote results to {output_path}")
 
     return 0
 

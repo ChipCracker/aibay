@@ -333,7 +333,7 @@ def run_whisper_large_v3_pipeline(
     optional timestamp ``segments_column`` and a WER column computed with jiwer.
     """
     df_with_predictions = transcribe_dataframe(
-        df[:4],
+        df,
         model=model,
         model_name="openai/whisper-large-v3",
         device=device,
