@@ -11,6 +11,7 @@ from datasets.BAS_RVG1 import load_sp1_dataframe
 from datasets.BAS_SC1 import load_sc1_dataframe
 from datasets.BAS_SC10 import load_sc10_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
+from parakeet_pipeline import run_parakeet_pipeline
 
 
 def _load_bas_rvg1() -> pd.DataFrame:
@@ -33,8 +34,21 @@ DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
 }
 
 
-def transcribe_dataset(dataset_key: str) -> pd.DataFrame:
-    """Load a dataset, run Whisper large-v3 inference, and compute WER."""
+def transcribe_dataset(dataset_key: str, model_type: str = "both") -> pd.DataFrame:
+    """Load a dataset, run ASR inference, and compute WER.
+
+    Parameters
+    ----------
+    dataset_key:
+        Dataset identifier.
+    model_type:
+        ASR model to use: "whisper", "parakeet", or "both".
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with transcriptions and WER scores.
+    """
     if dataset_key not in DATASET_LOADERS:
         raise ValueError(f"Unknown dataset '{dataset_key}'. Available options: {', '.join(DATASET_LOADERS)}")
 
@@ -42,7 +56,17 @@ def transcribe_dataset(dataset_key: str) -> pd.DataFrame:
     if df.empty:
         raise RuntimeError(f"Dataset '{dataset_key}' returned an empty DataFrame.")
 
-    return run_whisper_large_v3_pipeline(df)
+    if model_type == "whisper":
+        return run_whisper_large_v3_pipeline(df)
+    elif model_type == "parakeet":
+        return run_parakeet_pipeline(df)
+    elif model_type == "both":
+        # Run both models and merge results
+        df = run_whisper_large_v3_pipeline(df)
+        df = run_parakeet_pipeline(df)
+        return df
+    else:
+        raise ValueError(f"Unknown model_type '{model_type}'. Choose from: whisper, parakeet, both")
 
 
 def write_output(df: pd.DataFrame, output_path: Path) -> None:
@@ -51,11 +75,17 @@ def write_output(df: pd.DataFrame, output_path: Path) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Whisper large-v3 inference + WER on speech datasets.")
+    parser = argparse.ArgumentParser(description="Run ASR inference + WER on speech datasets.")
     parser.add_argument(
         "dataset",
         choices=sorted(DATASET_LOADERS),
         help="Dataset identifier to process.",
+    )
+    parser.add_argument(
+        "--model",
+        choices=["whisper", "parakeet", "both"],
+        default="whisper",
+        help="ASR model to use: whisper (Whisper Large V3), parakeet (Parakeet TDT v3), or both. Default: whisper.",
     )
     parser.add_argument(
         "--output",
@@ -74,7 +104,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    df = transcribe_dataset(args.dataset)
+    df = transcribe_dataset(args.dataset, model_type=args.model)
 
     if args.no_write:
         print(df.head())
