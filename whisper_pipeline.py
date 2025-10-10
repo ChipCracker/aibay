@@ -240,7 +240,9 @@ def add_wer_column(
     from jiwer import wer
 
     transform = normalizer
-    fallback = None
+    fallback_regex: Optional[re.Pattern[str]] = None
+    use_transform_args = True
+
     if transform is None:
         try:
             from jiwer import Compose, RemoveMultipleSpaces, ReplaceRegex, Strip, ToLowerCase
@@ -264,17 +266,22 @@ def add_wer_column(
                         Strip(),
                     ]
                 )
-                fallback = re.compile(r"-")
+                fallback_regex = re.compile(r"-")
+                use_transform_args = False
             except (ImportError, AttributeError):
-                fallback = re.compile(r"-")
+                fallback_regex = re.compile(r"-")
+                transform = None
+                use_transform_args = False
 
     def _normalize_text(text: str) -> str:
-        if transform is not None:
-            return transform(text)
-        text = fallback.sub(" ", text) if fallback else text
-        text = text.lower()
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
+        value = str(text)
+        if fallback_regex is not None:
+            value = fallback_regex.sub(" ", value)
+        if transform is not None and not use_transform_args:
+            value = transform(value)
+        value = value.lower()
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
 
     df_with_wer = df.copy()
     scores: list[Optional[float]] = []
@@ -283,7 +290,7 @@ def add_wer_column(
         if truth is None or hypo is None:
             scores.append(None)
             continue
-        if transform is not None:
+        if use_transform_args and transform is not None:
             scores.append(
                 wer(
                     str(truth),
@@ -293,7 +300,7 @@ def add_wer_column(
                 )
             )
         else:
-            scores.append(wer(_normalize_text(str(truth)), _normalize_text(str(hypo))))
+            scores.append(wer(_normalize_text(truth), _normalize_text(hypo)))
 
     df_with_wer[output_column] = scores
     return df_with_wer
@@ -326,7 +333,7 @@ def run_whisper_large_v3_pipeline(
     optional timestamp ``segments_column`` and a WER column computed with jiwer.
     """
     df_with_predictions = transcribe_dataframe(
-        df,
+        df[:4],
         model=model,
         model_name="openai/whisper-large-v3",
         device=device,
