@@ -26,6 +26,79 @@ def _ensure_package(name: str, install_hint: str) -> None:
         ) from exc
 
 
+def _build_german_number_map() -> dict[str, str]:
+    """Build a mapping of German number words (0-100) to digits."""
+    number_map = {
+        # 0-20
+        "null": "0",
+        "eins": "1",
+        "zwei": "2",
+        "drei": "3",
+        "vier": "4",
+        "fünf": "5",
+        "sechs": "6",
+        "sieben": "7",
+        "acht": "8",
+        "neun": "9",
+        "zehn": "10",
+        "elf": "11",
+        "zwölf": "12",
+        "dreizehn": "13",
+        "vierzehn": "14",
+        "fünfzehn": "15",
+        "sechzehn": "16",
+        "siebzehn": "17",
+        "achtzehn": "18",
+        "neunzehn": "19",
+        "zwanzig": "20",
+        # Tens
+        "dreißig": "30",
+        "vierzig": "40",
+        "fünfzig": "50",
+        "sechzig": "60",
+        "siebzig": "70",
+        "achtzig": "80",
+        "neunzig": "90",
+        "hundert": "100",
+    }
+
+    # Generate compound numbers: einundzwanzig (21) to neunundneunzig (99)
+    ones = ["ein", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun"]
+    tens_words = ["zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"]
+    tens_values = [20, 30, 40, 50, 60, 70, 80, 90]
+
+    for one_word, one_val in zip(ones, range(1, 10)):
+        for ten_word, ten_val in zip(tens_words, tens_values):
+            compound = f"{one_word}und{ten_word}"
+            number_map[compound] = str(ten_val + one_val)
+
+    return number_map
+
+
+def _normalize_german_numbers(text: str) -> str:
+    """Replace German number words (0-100) with digits."""
+    number_map = _build_german_number_map()
+
+    # Sort by length (longest first) to match compound numbers before components
+    sorted_numbers = sorted(number_map.keys(), key=len, reverse=True)
+
+    # Build regex pattern with word boundaries
+    pattern = r"\b(" + "|".join(re.escape(num) for num in sorted_numbers) + r")\b"
+
+    def replace_number(match: re.Match[str]) -> str:
+        word = match.group(1)
+        return number_map.get(word, word)
+
+    return re.sub(pattern, replace_number, text, flags=re.IGNORECASE)
+
+
+def _remove_punctuation(text: str) -> str:
+    """Remove punctuation marks from text."""
+    import string
+    # Remove all punctuation
+    return text.translate(str.maketrans("", "", string.punctuation))
+
+
 def load_whisper_model(
     model_name: str = "openai/whisper-large-v3",
     *,
@@ -234,10 +307,25 @@ def add_wer_column(
     output_column: str = "whisper_large_v3_wer",
     normalizer: Optional["jiwer.Compose"] = None,
 ) -> pd.DataFrame:
-    """Attach a WER column using ``jiwer``."""
+    """Attach a WER column using ``jiwer``.
+
+    Text normalization includes:
+    - Lowercase conversion
+    - German number words (0-100) to digits (e.g., "drei" → "3", "einundzwanzig" → "21")
+    - Punctuation removal
+    - Hyphen replacement with spaces
+    - Multiple space removal
+    """
     _ensure_package("jiwer", "Install it via `pip install jiwer`.")  # pragma: no cover
 
     from jiwer import wer
+
+    def _preprocess_text(text: str) -> str:
+        """Apply custom preprocessing: lowercase, normalize numbers, remove punctuation."""
+        value = str(text).lower()
+        value = _normalize_german_numbers(value)
+        value = _remove_punctuation(value)
+        return value
 
     transform = normalizer
     fallback_regex: Optional[re.Pattern[str]] = None
@@ -247,21 +335,21 @@ def add_wer_column(
         try:
             from jiwer import Compose, RemoveMultipleSpaces, ReplaceRegex, Strip, ToLowerCase
 
+            # Note: ToLowerCase, number normalization, and punctuation removal
+            # are handled in _preprocess_text, so we only need remaining transforms
             transform = Compose(
                 [
                     ReplaceRegex(r"-", " "),
-                    ToLowerCase(),
                     RemoveMultipleSpaces(),
                     Strip(),
                 ]
             )
         except (ImportError, AttributeError):
             try:
-                from jiwer import Compose, RemoveMultipleSpaces, Strip, ToLowerCase
+                from jiwer import Compose, RemoveMultipleSpaces, Strip
 
                 transform = Compose(
                     [
-                        ToLowerCase(),
                         RemoveMultipleSpaces(),
                         Strip(),
                     ]
@@ -274,12 +362,12 @@ def add_wer_column(
                 use_transform_args = False
 
     def _normalize_text(text: str) -> str:
-        value = str(text)
+        """Full normalization for fallback path (when not using jiwer transforms)."""
+        value = _preprocess_text(text)
         if fallback_regex is not None:
             value = fallback_regex.sub(" ", value)
         if transform is not None and not use_transform_args:
             value = transform(value)
-        value = value.lower()
         value = re.sub(r"\s+", " ", value)
         return value.strip()
 
@@ -290,11 +378,16 @@ def add_wer_column(
         if truth is None or hypo is None:
             scores.append(None)
             continue
+
+        # Preprocess both texts before applying jiwer transforms
+        truth_preprocessed = _preprocess_text(str(truth))
+        hypo_preprocessed = _preprocess_text(str(hypo))
+
         if use_transform_args and transform is not None:
             scores.append(
                 wer(
-                    str(truth),
-                    str(hypo),
+                    truth_preprocessed,
+                    hypo_preprocessed,
                     truth_transform=transform,
                     hypothesis_transform=transform,
                 )
