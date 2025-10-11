@@ -45,6 +45,7 @@ def load_parakeet_model(
     """
     _ensure_package("nemo", "Install it via `pip install nemo_toolkit[asr]`.")
     _ensure_package("torch", "Install PyTorch compatible with your platform.")
+    _ensure_package("datasets", "Install it via `pip install datasets`.")
 
     import nemo.collections.asr as nemo_asr
     import torch
