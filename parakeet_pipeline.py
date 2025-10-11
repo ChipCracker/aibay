@@ -101,6 +101,7 @@ def transcribe_dataframe(
     audio_column: str = "audio_path",
     transcription_column: str = "parakeet_tdt_v3_transcription",
     segments_column: Optional[str] = "parakeet_tdt_v3_segments",
+    batch_size: int = 16,
     show_progress: bool = True,
     skip_missing: bool = False,
     enable_timestamps: bool = True,
@@ -124,6 +125,9 @@ def transcribe_dataframe(
         Name of the output column for transcriptions.
     segments_column:
         Name of the output column for timestamp segments. Set to None to disable.
+    batch_size:
+        Number of audio files to process in a single batch. Larger values improve
+        throughput but require more GPU memory. Default is 16.
     show_progress:
         Whether to display a progress bar.
     skip_missing:
@@ -155,7 +159,12 @@ def transcribe_dataframe(
     transcripts: list[Optional[str]] = []
     segments_store: list[Optional[list]] | None = [] if segments_column else None
 
-    for audio_path in _iter_audio_paths(df_with_transcriptions[audio_column], show_progress):
+    # Prepare all audio paths and validate them
+    audio_paths = [Path(p) for p in df_with_transcriptions[audio_column]]
+    valid_indices: list[int] = []
+    valid_paths: list[str] = []
+
+    for idx, audio_path in enumerate(audio_paths):
         if not audio_path.is_file():
             message = f"Audio file not found: {audio_path}"
             if skip_missing:
@@ -177,42 +186,65 @@ def transcribe_dataframe(
                 segments_store.append(None)
             continue
 
-        # Run inference
+        valid_indices.append(idx)
+        valid_paths.append(str(audio_path))
+
+    # Process in batches
+    num_batches = (len(valid_paths) + batch_size - 1) // batch_size
+    batch_iterator = range(num_batches)
+
+    if show_progress:
+        try:
+            from tqdm import tqdm
+            batch_iterator = tqdm(batch_iterator, desc="Transcribing (Parakeet)", unit="batch")
+        except ImportError:
+            pass
+
+    for batch_idx in batch_iterator:
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(valid_paths))
+        batch_paths = valid_paths[start_idx:end_idx]
+
+        # Run batch inference
         try:
             result = parakeet_model.transcribe(
-                [str(audio_path)],
+                batch_paths,
+                batch_size=batch_size,
                 timestamps=enable_timestamps,
             )
 
-            # Extract transcription text
-            if isinstance(result, list) and len(result) > 0:
-                transcription_obj = result[0]
-                # NeMo returns objects with .text attribute
-                text = getattr(transcription_obj, "text", "")
-                transcripts.append(text.strip() if text else None)
+            # Extract transcriptions for this batch
+            if isinstance(result, list):
+                for transcription_obj in result:
+                    # NeMo returns objects with .text attribute
+                    text = getattr(transcription_obj, "text", "")
+                    transcripts.append(text.strip() if text else None)
 
-                # Extract timestamp information if available
-                if segments_store is not None and enable_timestamps:
-                    timestamp_info = getattr(transcription_obj, "timestamp", None)
-                    if timestamp_info:
-                        # Store segment-level timestamps
-                        segments = timestamp_info.get("segment", [])
-                        segments_store.append(segments if segments else None)
-                    else:
-                        segments_store.append(None)
+                    # Extract timestamp information if available
+                    if segments_store is not None and enable_timestamps:
+                        timestamp_info = getattr(transcription_obj, "timestamp", None)
+                        if timestamp_info:
+                            # Store segment-level timestamps
+                            segments = timestamp_info.get("segment", [])
+                            segments_store.append(segments if segments else None)
+                        else:
+                            segments_store.append(None)
             else:
-                transcripts.append(None)
-                if segments_store is not None:
-                    segments_store.append(None)
+                # Unexpected result format
+                for _ in batch_paths:
+                    transcripts.append(None)
+                    if segments_store is not None:
+                        segments_store.append(None)
         except Exception as e:
             warnings.warn(
-                f"Transcription failed for {audio_path.name}: {e}",
+                f"Batch transcription failed for batch {batch_idx}: {e}",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            transcripts.append(None)
-            if segments_store is not None:
-                segments_store.append(None)
+            for _ in batch_paths:
+                transcripts.append(None)
+                if segments_store is not None:
+                    segments_store.append(None)
 
     df_with_transcriptions[transcription_column] = transcripts
     if segments_store is not None:
@@ -230,6 +262,7 @@ def run_parakeet_pipeline(
     transcription_column: str = "parakeet_tdt_v3_transcription",
     segments_column: Optional[str] = "parakeet_tdt_v3_segments",
     wer_column: str = "parakeet_tdt_v3_wer",
+    batch_size: int = 16,
     show_progress: bool = True,
     skip_missing: bool = False,
     enable_timestamps: bool = True,
@@ -259,6 +292,8 @@ def run_parakeet_pipeline(
         Output column name for timestamp segments.
     wer_column:
         Output column name for WER scores.
+    batch_size:
+        Number of audio files to process in a single batch.
     show_progress:
         Whether to show progress bar.
     skip_missing:
@@ -286,6 +321,7 @@ def run_parakeet_pipeline(
         audio_column=audio_column,
         transcription_column=transcription_column,
         segments_column=segments_column,
+        batch_size=batch_size,
         show_progress=show_progress,
         skip_missing=skip_missing,
         enable_timestamps=enable_timestamps,
