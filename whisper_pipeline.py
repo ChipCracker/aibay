@@ -27,9 +27,15 @@ def _ensure_package(name: str, install_hint: str) -> None:
 
 
 def _build_german_number_map() -> dict[str, str]:
-    """Build a mapping of German number words (0-100) to digits."""
+    """Build a mapping of German number words (0-100) to digits.
+
+    Supports multiple spelling variants:
+    - ß/ss: dreißig/dreissig
+    - ü/ue: fünf/fuenf
+    - ö/oe: zwölf/zwoelf
+    """
     number_map = {
-        # 0-20
+        # 0-20 (standard spellings)
         "null": "0",
         "eins": "1",
         "zwei": "2",
@@ -51,7 +57,7 @@ def _build_german_number_map() -> dict[str, str]:
         "achtzehn": "18",
         "neunzehn": "19",
         "zwanzig": "20",
-        # Tens
+        # Tens (standard spellings)
         "dreißig": "30",
         "vierzig": "40",
         "fünfzig": "50",
@@ -60,17 +66,43 @@ def _build_german_number_map() -> dict[str, str]:
         "achtzig": "80",
         "neunzig": "90",
         "hundert": "100",
+        # Alternative spellings (ue/oe/ss variants)
+        "fuenf": "5",
+        "zwoelf": "12",
+        "fuenfzehn": "15",
+        "dreissig": "30",
+        "fuenfzig": "50",
     }
 
-    # Generate compound numbers: einundzwanzig (21) to neunundneunzig (99)
-    ones = ["ein", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun"]
-    tens_words = ["zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"]
+    # Generate compound numbers with ALL spelling variants
+    # Ones: standard and alternative spellings
+    ones_standard = ["ein", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun"]
+    ones_alternatives = {
+        "fünf": ["fuenf"],  # ü variant
+    }
+
+    # Tens: standard and alternative spellings
+    tens_standard = ["zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"]
+    tens_alternatives = {
+        "dreißig": ["dreissig"],  # ß variant
+        "fünfzig": ["fuenfzig"],  # ü variant
+    }
     tens_values = [20, 30, 40, 50, 60, 70, 80, 90]
 
-    for one_word, one_val in zip(ones, range(1, 10)):
-        for ten_word, ten_val in zip(tens_words, tens_values):
-            compound = f"{one_word}und{ten_word}"
-            number_map[compound] = str(ten_val + one_val)
+    # Generate all combinations: {one}und{ten} with all variants
+    for one_word, one_val in zip(ones_standard, range(1, 10)):
+        # Get all variants for this "one" word (standard + alternatives)
+        one_variants = [one_word] + ones_alternatives.get(one_word, [])
+
+        for ten_word, ten_val in zip(tens_standard, tens_values):
+            # Get all variants for this "ten" word (standard + alternatives)
+            ten_variants = [ten_word] + tens_alternatives.get(ten_word, [])
+
+            # Create compound for all combinations
+            for one_variant in one_variants:
+                for ten_variant in ten_variants:
+                    compound = f"{one_variant}und{ten_variant}"
+                    number_map[compound] = str(ten_val + one_val)
 
     return number_map
 
