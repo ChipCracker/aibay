@@ -180,7 +180,7 @@ def transcribe_dataframe(
         # Run inference
         try:
             result = parakeet_model.transcribe(
-                paths2audio_files=[str(audio_path)],
+                [str(audio_path)],
                 timestamps=enable_timestamps,
             )
 
