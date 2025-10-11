@@ -7,9 +7,9 @@ from typing import Callable, Dict
 
 import pandas as pd
 
-from datasets.BAS_RVG1 import load_sp1_dataframe
-from datasets.BAS_SC1 import load_sc1_dataframe
-from datasets.BAS_SC10 import load_sc10_dataframe
+from dataset_loaders.BAS_RVG1 import load_sp1_dataframe
+from dataset_loaders.BAS_SC1 import load_sc1_dataframe
+from dataset_loaders.BAS_SC10 import load_sc10_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
 from parakeet_pipeline import run_parakeet_pipeline
 
