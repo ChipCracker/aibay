@@ -12,6 +12,7 @@ from dataset_loaders.BAS_SC1 import load_sc1_dataframe
 from dataset_loaders.BAS_SC10 import load_sc10_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
 from parakeet_pipeline import run_parakeet_pipeline
+from paths import OUTPUT_PATH
 
 
 def _load_bas_rvg1() -> pd.DataFrame:
@@ -75,6 +76,9 @@ def write_output(df: pd.DataFrame, output_path: Path) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # Use OUTPUT_PATH from paths.py if available, otherwise default to "outputs"
+    default_output_dir = Path(OUTPUT_PATH) if OUTPUT_PATH else Path("outputs")
+
     parser = argparse.ArgumentParser(description="Run ASR inference + WER on speech datasets.")
     parser.add_argument(
         "dataset",
@@ -91,7 +95,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Destination CSV file. Defaults to outputs/<dataset>.csv.",
+        help=f"Destination CSV file. Defaults to {default_output_dir}/<dataset>.csv.",
     )
     parser.add_argument(
         "--no-write",
@@ -109,7 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_write:
         print(df.head())
     else:
-        output_path = args.output or Path("outputs") / f"{args.dataset}.csv"
+        # Use OUTPUT_PATH from paths.py if available, otherwise default to "outputs"
+        default_output_dir = Path(OUTPUT_PATH) if OUTPUT_PATH else Path("outputs")
+        output_path = args.output or default_output_dir / f"{args.dataset}.csv"
         write_output(df, output_path)
         print(f"Wrote results to {output_path}")
 
