@@ -10,7 +10,7 @@ transcriptions:
 
 Usage
 -----
-    python recompute_wer.py outputs/bas_sc10.csv
+    python recompute_wer.py outputs/bas_rvg1.csv
     python recompute_wer.py outputs/*.csv --glob
 
 The script overwrites the CSV in-place. Pass ``--no-backup`` to skip creating

@@ -8,8 +8,6 @@ from typing import Callable, Dict
 import pandas as pd
 
 from dataset_loaders.BAS_RVG1 import load_sp1_dataframe
-from dataset_loaders.BAS_SC1 import load_sc1_dataframe
-from dataset_loaders.BAS_SC10 import load_sc10_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
 from parakeet_pipeline import run_parakeet_pipeline
 from paths import OUTPUT_PATH
@@ -19,19 +17,8 @@ def _load_bas_rvg1() -> pd.DataFrame:
     """Load BAS RVG1 SP1 data with ground-truth transcriptions."""
     return load_sp1_dataframe()
 
-def _load_bas_sc1() -> pd.DataFrame:
-    """Load BAS SC1 data with ground-truth transcriptions."""
-    return load_sc1_dataframe()
-
-def _load_bas_sc10() -> pd.DataFrame:
-    """Load BAS SC10 data with ground-truth transcriptions."""
-    return load_sc10_dataframe()
-
-
 DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
     "bas_rvg1": _load_bas_rvg1,
-    "bas_sc1": _load_bas_sc1,
-    "bas_sc10": _load_bas_sc10,
 }
 
 
