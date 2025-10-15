@@ -174,6 +174,8 @@ def parse_annotation(path: Path) -> RecordingStats | None:
 
 
 def aggregate_speaker_stats(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["speaker_id"] = df["speaker_id"].astype(str)
     grouped = df.groupby("speaker_id").agg(
         dialect_strength_mean=("dialect_strength", "mean"),
         dialect_strength_median=("dialect_strength", "median"),
@@ -190,6 +192,8 @@ def aggregate_speaker_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def aggregate_wer(wer_df: pd.DataFrame) -> pd.DataFrame:
+    wer_df = wer_df.copy()
+    wer_df["speaker_id"] = wer_df["speaker_id"].astype(str)
     wer_columns = [col for col in wer_df.columns if col.endswith("_wer")]
     if not wer_columns:
         return pd.DataFrame()
@@ -278,7 +282,7 @@ def main() -> int:
     if not args.annot_root.exists():
         raise FileNotFoundError(f"Annotation root not found: {args.annot_root}")
 
-    annot_files = sorted(args.annot_root.rglob("*_annot.json"))
+    annot_files = sorted(args.annot_root.rglob("sp1[a-d]*_annot.json"))
     if not annot_files:
         raise FileNotFoundError("No *.annot.json files found under the provided root.")
 
