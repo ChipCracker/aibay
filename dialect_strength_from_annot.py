@@ -27,6 +27,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from paths import BAS_RVG1_PATH, OUTPUT_PATH
+
 # Regex patterns mirroring the cleaning logic from dataset_loaders.BAS_RVG1
 _RE_TAG = re.compile(r"<[^>]+>")
 _RE_WHITESPACE = re.compile(r"\s+")
@@ -216,10 +218,22 @@ def correlations(strength_df: pd.DataFrame, wer_df: pd.DataFrame) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
+    default_root = Path(BAS_RVG1_PATH) if BAS_RVG1_PATH else None
+    default_output_dir = Path(OUTPUT_PATH) if OUTPUT_PATH else Path("outputs")
+
     parser = argparse.ArgumentParser(
         description="Compute dialect strength from BAS RVG1 annotation JSON files."
     )
-    parser.add_argument("annot_root", type=Path, help="Directory containing *.annot.json files.")
+    parser.add_argument(
+        "annot_root",
+        type=Path,
+        nargs="?" if default_root else None,
+        default=default_root,
+        help=(
+            "Directory containing *.annot.json files. "
+            f"Default: {default_root}" if default_root else "Directory containing *.annot.json files."
+        ),
+    )
     parser.add_argument(
         "--wer-csv",
         type=Path,
@@ -241,7 +255,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip writing CSV outputs even if output paths are supplied.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.annot_root is None:
+        parser.error("annot_root is required because DATASETS_PATH/BAS-RVG1 is not configured.")
+
+    if args.recording_output and not args.recording_output.is_absolute():
+        args.recording_output = default_output_dir / args.recording_output
+    if args.speaker_output and not args.speaker_output.is_absolute():
+        args.speaker_output = default_output_dir / args.speaker_output
+
+    return args
 
 
 def main() -> int:
