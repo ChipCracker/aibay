@@ -128,7 +128,7 @@ def parse_annotation(path: Path) -> RecordingStats | None:
     recording_id = data.get("name", path.stem)
 
     # Sprecher-ID aus Bundle-Level (Label "SPN")
-    speaker_id = None
+    speaker_id: str | None = None
     for level in data.get("levels", []):
         if level.get("name") == "bundle":
             for item in level.get("items", []):
@@ -139,8 +139,12 @@ def parse_annotation(path: Path) -> RecordingStats | None:
         if speaker_id:
             break
     if not speaker_id:
-        # Fallback: letzte drei Ziffern des Recording-Namens
-        speaker_id = recording_id[-3:]
+        parent_name = path.parent.name
+        if parent_name.isdigit():
+            speaker_id = parent_name
+        else:
+            # Fallback: letzte drei Ziffern des Recording-Namens
+            speaker_id = recording_id[-3:]
 
     ort_level = next((lvl for lvl in data.get("levels", []) if lvl.get("name") == "ORT"), None)
     if not ort_level:
@@ -270,6 +274,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
+    print(args.annot_root)
     if not args.annot_root.exists():
         raise FileNotFoundError(f"Annotation root not found: {args.annot_root}")
 
