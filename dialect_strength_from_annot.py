@@ -197,40 +197,6 @@ def aggregate_speaker_stats(df: pd.DataFrame) -> pd.DataFrame:
     return grouped.reset_index()
 
 
-def aggregate_wer(wer_df: pd.DataFrame) -> pd.DataFrame:
-    wer_df = wer_df.copy()
-    wer_df["speaker_id"] = wer_df["speaker_id"].astype(str)
-    wer_columns = [col for col in wer_df.columns if col.endswith("_wer")]
-    if not wer_columns:
-        return pd.DataFrame()
-    grouped = wer_df.groupby("speaker_id")[wer_columns].agg(["mean", "median"])
-    grouped.columns = ["_".join(col).strip("_") for col in grouped.columns]
-    return grouped.reset_index()
-
-
-def correlations(strength_df: pd.DataFrame, wer_df: pd.DataFrame) -> list[str]:
-    if strength_df.empty or wer_df.empty:
-        return []
-
-    merged = strength_df.merge(wer_df, on="speaker_id", how="inner")
-    merged = merged.dropna(subset=["dialect_strength_mean"])
-
-    lines: list[str] = []
-    for col in wer_df.columns:
-        if col == "speaker_id":
-            continue
-        if not col.endswith(("_mean", "_median")):
-            continue
-        if merged[col].isna().all():
-            continue
-
-        pearson = merged["dialect_strength_mean"].corr(merged[col], method="pearson")
-        spearman = merged["dialect_strength_mean"].corr(merged[col], method="spearman")
-        n = merged[[ "dialect_strength_mean", col]].dropna().shape[0]
-        lines.append(f"{col}: pearson={pearson:.4f} spearman={spearman:.4f} (n={n})")
-    return lines
-
-
 def parse_args() -> argparse.Namespace:
     default_root = Path(BAS_RVG1_PATH) if BAS_RVG1_PATH else None
     default_output_dir = Path(OUTPUT_PATH) if OUTPUT_PATH else Path("outputs")
@@ -249,20 +215,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--wer-csv",
+        "--output",
         type=Path,
         default=None,
-        help="Optional CSV with WER results (must contain speaker_id and *_wer columns).",
-    )
-    parser.add_argument(
-        "--recording-output",
-        type=Path,
-        help="Optional CSV to write recording-level dialect strengths.",
-    )
-    parser.add_argument(
-        "--speaker-output",
-        type=Path,
-        help="Optional CSV to write speaker-level dialect strengths.",
+        help="Destination CSV for dialect strengths (defaults to OUTPUT_PATH/dialect_strength_sp1.csv).",
     )
     parser.add_argument(
         "--no-write",
@@ -273,10 +229,10 @@ def parse_args() -> argparse.Namespace:
     if args.annot_root is None:
         parser.error("annot_root is required because DATASETS_PATH/BAS-RVG1 is not configured.")
 
-    if args.recording_output and not args.recording_output.is_absolute():
-        args.recording_output = default_output_dir / args.recording_output
-    if args.speaker_output and not args.speaker_output.is_absolute():
-        args.speaker_output = default_output_dir / args.speaker_output
+    if args.output and not args.output.is_absolute():
+        args.output = default_output_dir / args.output
+    if args.output is None:
+        args.output = default_output_dir / "dialect_strength_sp1.csv"
 
     return args
 
@@ -288,7 +244,7 @@ def main() -> int:
     if not args.annot_root.exists():
         raise FileNotFoundError(f"Annotation root not found: {args.annot_root}")
 
-    annot_files = sorted(args.annot_root.rglob("sp1[a-d]*_annot.json"))
+    annot_files = sorted(args.annot_root.rglob("sp1c*_annot.json"))
     if not annot_files:
         raise FileNotFoundError("No *.annot.json files found under the provided root.")
 
@@ -304,47 +260,26 @@ def main() -> int:
 
     rec_df = pd.DataFrame(
         {
-            "recording_id": [r.recording_id for r in records],
+            "file_id": [r.recording_id for r in records],
             "speaker_id": [r.speaker_id for r in records],
             "tokens_total": [r.tokens_total for r in records],
             "tokens_replaced": [r.tokens_replaced for r in records],
             "dialect_strength": [r.dialect_strength for r in records],
-            "annot_path": [str(r.path) for r in records],
+            "audio_path": [str(r.path.with_suffix(".wav")) for r in records],
         }
     )
 
-    speaker_df = aggregate_speaker_stats(rec_df)
-
     print("Recording-level dialect strength summary:")
     print(rec_df["dialect_strength"].describe())
-    print("\nSpeaker-level dialect strength summary:")
-    print(speaker_df["dialect_strength_mean"].describe())
 
-    wer_df = pd.DataFrame()
-    if args.wer_csv:
-        if not args.wer_csv.is_file():
-            raise FileNotFoundError(f"WER CSV not found: {args.wer_csv}")
-        raw_wer = pd.read_csv(args.wer_csv)
-        if "speaker_id" not in raw_wer.columns:
-            raise ValueError("WER CSV must contain a 'speaker_id' column.")
-        wer_df = aggregate_wer(raw_wer)
-        if not wer_df.empty:
-            print("\nCorrelations (speaker-level):")
-            for line in correlations(speaker_df, wer_df):
-                print("  ", line)
+    output_df = rec_df[["speaker_id", "file_id", "dialect_strength"]].copy()
 
     if not args.no_write:
-        if args.recording_output:
-            args.recording_output.parent.mkdir(parents=True, exist_ok=True)
-            rec_df.to_csv(args.recording_output, index=False)
-            print(f"Recorded dialect strengths written to {args.recording_output}")
-        if args.speaker_output:
-            args.speaker_output.parent.mkdir(parents=True, exist_ok=True)
-            out_df = speaker_df.copy()
-            if not wer_df.empty:
-                out_df = out_df.merge(wer_df, on="speaker_id", how="left")
-            out_df.to_csv(args.speaker_output, index=False)
-            print(f"Speaker-level summary written to {args.speaker_output}")
+        target_path: Path = args.output
+        target_path = target_path if target_path.is_absolute() else target_path.resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        output_df.to_csv(target_path, index=False)
+        print(f"Dialect strengths written to {target_path}")
 
     return 0
 
