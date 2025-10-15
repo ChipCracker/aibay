@@ -278,7 +278,7 @@ def main() -> int:
     if not args.annot_root.exists():
         raise FileNotFoundError(f"Annotation root not found: {args.annot_root}")
 
-    annot_files = sorted(args.annot_root.rglob("*.annot.json"))
+    annot_files = sorted(args.annot_root.rglob("*_annot.json"))
     if not annot_files:
         raise FileNotFoundError("No *.annot.json files found under the provided root.")
 
