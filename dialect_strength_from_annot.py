@@ -188,6 +188,12 @@ def aggregate_speaker_stats(df: pd.DataFrame) -> pd.DataFrame:
         .groupby("speaker_id")["flag"]
         .mean()
     )
+    counts = (
+        df.groupby("speaker_id")
+        .size()
+        .rename("recording_count")
+    )
+    grouped = grouped.join(counts, how="left")
     return grouped.reset_index()
 
 
