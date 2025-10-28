@@ -8,6 +8,7 @@ from typing import Callable, Dict
 import pandas as pd
 
 from dataset_loaders.BAS_RVG1 import load_sp1_dataframe
+from dataset_loaders.switchboard_benchmark import load_switchboard_benchmark_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
 from parakeet_pipeline import run_parakeet_pipeline
 from paths import OUTPUT_PATH
@@ -19,6 +20,7 @@ def _load_bas_rvg1() -> pd.DataFrame:
 
 DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
     "bas_rvg1": _load_bas_rvg1,
+    "switchboard_benchmark": load_switchboard_benchmark_dataframe,
 }
 
 
