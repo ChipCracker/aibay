@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Iterable, Optional, Union
+import tempfile
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -80,16 +81,10 @@ def load_parakeet_model(
     return asr_model
 
 
-def _iter_audio_paths(paths: Iterable[str | Path], show_progress: bool) -> Iterable[Path]:
-    iterator = [Path(p) for p in paths]
-    if show_progress:
-        try:  # pragma: no cover - optional dependency
-            from tqdm import tqdm
-
-            return (Path(p) for p in tqdm(iterator, desc="Transcribing (Parakeet)", unit="file"))
-        except ImportError:
-            pass
-    return (Path(p) for p in iterator)
+try:  # pragma: no cover - optional dependency
+    from audio_utils import InMemoryAudio as _InMemoryAudio
+except ImportError:  # pragma: no cover - fallback when module unavailable
+    _InMemoryAudio = None
 
 
 def transcribe_dataframe(
@@ -156,95 +151,116 @@ def transcribe_dataframe(
         parakeet_model = model
 
     df_with_transcriptions = df.copy()
-    transcripts: list[Optional[str]] = []
-    segments_store: list[Optional[list]] | None = [] if segments_column else None
+    audio_entries = list(df_with_transcriptions[audio_column])
+    transcripts: list[Optional[str]] = [None] * len(audio_entries)
+    segments_store: list[Optional[list]] | None = [None] * len(audio_entries) if segments_column else None
 
-    # Prepare all audio paths and validate them
-    audio_paths = [Path(p) for p in df_with_transcriptions[audio_column]]
     valid_indices: list[int] = []
     valid_paths: list[str] = []
+    temp_files: list[Path] = []
 
-    for idx, audio_path in enumerate(audio_paths):
+    for idx, entry in enumerate(audio_entries):
+        if entry is None:
+            continue
+
+        if _InMemoryAudio is not None and isinstance(entry, _InMemoryAudio):
+            try:
+                wav_bytes = entry.to_wav_bytes()
+            except Exception as exc:
+                warnings.warn(
+                    f"Failed to materialise in-memory audio for entry {entry.descriptor()}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            try:
+                temp_file.write(wav_bytes)
+                temp_file.flush()
+            finally:
+                temp_file.close()
+
+            temp_path = Path(temp_file.name)
+            temp_files.append(temp_path)
+            valid_indices.append(idx)
+            valid_paths.append(str(temp_path))
+            continue
+
+        audio_path = Path(str(entry))
         if not audio_path.is_file():
             message = f"Audio file not found: {audio_path}"
             if skip_missing:
                 warnings.warn(message, RuntimeWarning, stacklevel=2)
-                transcripts.append(None)
-                if segments_store is not None:
-                    segments_store.append(None)
                 continue
             raise FileNotFoundError(message)
 
-        # Check for NIST format (not supported by most models)
         if audio_path.suffix.lower() == ".nis":
             message = (
                 f"Skipping NIST file '{audio_path.name}'. Convert it to WAV before running Parakeet."
             )
             warnings.warn(message, RuntimeWarning, stacklevel=2)
-            transcripts.append(None)
-            if segments_store is not None:
-                segments_store.append(None)
             continue
 
         valid_indices.append(idx)
         valid_paths.append(str(audio_path))
 
-    # Process in batches
     num_batches = (len(valid_paths) + batch_size - 1) // batch_size
     batch_iterator = range(num_batches)
 
     if show_progress:
         try:
             from tqdm import tqdm
+
             batch_iterator = tqdm(batch_iterator, desc="Transcribing (Parakeet)", unit="batch")
         except ImportError:
             pass
 
-    for batch_idx in batch_iterator:
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, len(valid_paths))
-        batch_paths = valid_paths[start_idx:end_idx]
+    try:
+        for batch_idx in batch_iterator:
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(valid_paths))
+            batch_paths = valid_paths[start_idx:end_idx]
 
-        # Run batch inference
-        try:
-            result = parakeet_model.transcribe(
-                batch_paths,
-                batch_size=batch_size,
-                timestamps=enable_timestamps,
-            )
+            try:
+                result = parakeet_model.transcribe(
+                    batch_paths,
+                    batch_size=batch_size,
+                    timestamps=enable_timestamps,
+                )
+            except Exception as exc:
+                warnings.warn(
+                    f"Batch transcription failed for batch {batch_idx}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
 
-            # Extract transcriptions for this batch
             if isinstance(result, list):
-                for transcription_obj in result:
-                    # NeMo returns objects with .text attribute
+                for offset, transcription_obj in enumerate(result):
+                    target_idx = valid_indices[start_idx + offset]
                     text = getattr(transcription_obj, "text", "")
-                    transcripts.append(text.strip() if text else None)
+                    transcripts[target_idx] = text.strip() if text else None
 
-                    # Extract timestamp information if available
                     if segments_store is not None and enable_timestamps:
                         timestamp_info = getattr(transcription_obj, "timestamp", None)
                         if timestamp_info:
-                            # Store segment-level timestamps
                             segments = timestamp_info.get("segment", [])
-                            segments_store.append(segments if segments else None)
+                            segments_store[target_idx] = segments if segments else None
                         else:
-                            segments_store.append(None)
+                            segments_store[target_idx] = None
             else:
-                # Unexpected result format
-                for _ in batch_paths:
-                    transcripts.append(None)
+                for offset in range(len(batch_paths)):
+                    target_idx = valid_indices[start_idx + offset]
+                    transcripts[target_idx] = None
                     if segments_store is not None:
-                        segments_store.append(None)
-        except Exception as e:
-            warnings.warn(
-                f"Batch transcription failed for batch {batch_idx}: {e}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            for _ in batch_paths:
-                transcripts.append(None)
-                if segments_store is not None:
-                    segments_store.append(None)
+                        segments_store[target_idx] = None
+    finally:
+        for temp_path in temp_files:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                warnings.warn(f"Failed to remove temporary file {temp_path}", RuntimeWarning, stacklevel=2)
 
     df_with_transcriptions[transcription_column] = transcripts
     if segments_store is not None:

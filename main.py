@@ -9,6 +9,7 @@ import pandas as pd
 
 from dataset_loaders.BAS_RVG1 import load_sp1_dataframe
 from dataset_loaders.switchboard_benchmark import load_switchboard_benchmark_dataframe
+from dataset_loaders.verbmobil_small import load_verbmobil_small_dataframe
 from whisper_pipeline import run_whisper_large_v3_pipeline
 from parakeet_pipeline import run_parakeet_pipeline
 from paths import OUTPUT_PATH
@@ -21,6 +22,7 @@ def _load_bas_rvg1() -> pd.DataFrame:
 DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
     "bas_rvg1": _load_bas_rvg1,
     "switchboard_benchmark": load_switchboard_benchmark_dataframe,
+    "verbmobil_small": load_verbmobil_small_dataframe,
 }
 
 
@@ -46,14 +48,16 @@ def transcribe_dataset(dataset_key: str, model_type: str = "both") -> pd.DataFra
     if df.empty:
         raise RuntimeError(f"Dataset '{dataset_key}' returned an empty DataFrame.")
 
+    audio_column = "audio_source" if "audio_source" in df.columns and df["audio_source"].notna().any() else "audio_path"
+
     if model_type == "whisper":
-        return run_whisper_large_v3_pipeline(df)
+        return run_whisper_large_v3_pipeline(df, audio_column=audio_column)
     elif model_type == "parakeet":
-        return run_parakeet_pipeline(df)
+        return run_parakeet_pipeline(df, audio_column=audio_column)
     elif model_type == "both":
         # Run both models and merge results
-        df = run_whisper_large_v3_pipeline(df)
-        df = run_parakeet_pipeline(df)
+        df = run_whisper_large_v3_pipeline(df, audio_column=audio_column)
+        df = run_parakeet_pipeline(df, audio_column=audio_column)
         return df
     else:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose from: whisper, parakeet, both")

@@ -208,16 +208,10 @@ def load_whisper_model(
     return pipe
 
 
-def _iter_audio_paths(paths: Iterable[str | Path], show_progress: bool) -> Iterable[Path]:
-    iterator = [Path(p) for p in paths]
-    if show_progress:
-        try:  # pragma: no cover - optional dependency
-            from tqdm import tqdm
-
-            return (Path(p) for p in tqdm(iterator, desc="Transcribing", unit="file"))
-        except ImportError:
-            pass
-    return (Path(p) for p in iterator)
+try:  # pragma: no cover - optional dependency
+    from audio_utils import InMemoryAudio as _InMemoryAudio
+except ImportError:  # pragma: no cover - fallback when module unavailable
+    _InMemoryAudio = None
 
 
 def transcribe_dataframe(
@@ -283,47 +277,68 @@ def transcribe_dataframe(
             setattr(whisper_pipe, "ignore_warning", ignore_warning)
 
     df_with_transcriptions = df.copy()
-    transcripts: list[Optional[str]] = []
-    segments_store: list[Optional[list]] | None = [] if segments_column else None
+    audio_values = list(df_with_transcriptions[audio_column])
+    transcripts: list[Optional[str]] = [None] * len(audio_values)
+    segments_store: list[Optional[list]] | None = [None] * len(audio_values) if segments_column else None
 
-    for audio_path in _iter_audio_paths(df_with_transcriptions[audio_column], show_progress):
-        if not audio_path.is_file():
-            message = f"Audio file not found: {audio_path}"
-            if skip_missing:
-                warnings.warn(message, RuntimeWarning, stacklevel=2)
-                transcripts.append(None)
-                if segments_store is not None:
-                    segments_store.append(None)
-                continue
-            raise FileNotFoundError(message)
+    call_kwargs_base: dict[str, object] = {**transcribe_kwargs}
+    if chunk_length_s is not None:
+        call_kwargs_base["chunk_length_s"] = chunk_length_s
+    if stride_length_s is not None:
+        call_kwargs_base["stride_length_s"] = stride_length_s
+    if return_timestamps is not None:
+        call_kwargs_base["return_timestamps"] = return_timestamps
+    if ignore_warning is not None:
+        call_kwargs_base["ignore_warning"] = ignore_warning
+    if "generate_kwargs" in call_kwargs_base:
+        call_kwargs_base["generate_kwargs"] = _sanitize_generate_kwargs(call_kwargs_base["generate_kwargs"])
 
-        if audio_path.suffix.lower() == ".nis":
-            message = (
-                f"Skipping NIST file '{audio_path.name}'. Convert it to WAV before running Whisper."
-            )
-            warnings.warn(message, RuntimeWarning, stacklevel=2)
-            transcripts.append(None)
-            if segments_store is not None:
-                segments_store.append(None)
+    index_iterable: Iterable[int] = range(len(audio_values))
+    if show_progress:
+        try:  # pragma: no cover - optional dependency
+            from tqdm import tqdm
+
+            index_iterable = tqdm(index_iterable, desc="Transcribing", unit="file")
+        except ImportError:
+            pass
+
+    for idx in index_iterable:
+        entry = audio_values[idx]
+        if entry is None:
             continue
 
-        call_kwargs = {**transcribe_kwargs}
-        if chunk_length_s is not None:
-            call_kwargs["chunk_length_s"] = chunk_length_s
-        if stride_length_s is not None:
-            call_kwargs["stride_length_s"] = stride_length_s
-        if return_timestamps is not None:
-            call_kwargs["return_timestamps"] = return_timestamps
-        if ignore_warning is not None:
-            call_kwargs["ignore_warning"] = ignore_warning
+        descriptor = None
+        input_obj: Union[str, dict[str, object]]
 
-        if "generate_kwargs" in call_kwargs:
-            call_kwargs["generate_kwargs"] = _sanitize_generate_kwargs(call_kwargs["generate_kwargs"])
+        if _InMemoryAudio is not None and isinstance(entry, _InMemoryAudio):
+            descriptor = entry.descriptor()
+            input_obj = entry.to_whisper_input()
+        else:
+            audio_path = Path(str(entry))
+            if not audio_path.is_file():
+                message = f"Audio file not found: {audio_path}"
+                if skip_missing:
+                    warnings.warn(message, RuntimeWarning, stacklevel=2)
+                    continue
+                raise FileNotFoundError(message)
 
-        result = whisper_pipe(str(audio_path), **call_kwargs)
-        transcripts.append(result.get("text", "").strip())
+            if audio_path.suffix.lower() == ".nis":
+                message = (
+                    f"Skipping NIST file '{audio_path.name}'. Convert it to WAV before running Whisper."
+                )
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
+                continue
+
+            descriptor = str(audio_path)
+            input_obj = descriptor
+
+        call_kwargs = dict(call_kwargs_base)
+        result = whisper_pipe(input_obj, **call_kwargs)
+
+        text = result.get("text", "").strip()
+        transcripts[idx] = text or None
         if segments_store is not None:
-            segments_store.append(result.get("segments") or result.get("chunks"))
+            segments_store[idx] = result.get("segments") or result.get("chunks")
 
     df_with_transcriptions[transcription_column] = transcripts
     if segments_store is not None:
