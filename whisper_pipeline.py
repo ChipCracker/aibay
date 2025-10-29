@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import warnings
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -224,6 +224,7 @@ def transcribe_dataframe(
     audio_column: str = "audio_path",
     transcription_column: str = "whisper_large_v3_transcription",
     segments_column: Optional[str] = "whisper_large_v3_segments",
+    batch_size: Optional[int] = 16,
     show_progress: bool = True,
     skip_missing: bool = False,
     transcribe_kwargs: Optional[dict] = None,
@@ -243,6 +244,10 @@ def transcribe_dataframe(
 
     Notes
     -----
+    ``batch_size`` controls how many audio items are forwarded to the pipeline
+    per inference call. Increasing it improves GPU utilisation at the cost of
+    additional memory usage.
+
     This function does not mutate the input DataFrame; a copy is returned.
     """
     transcribe_kwargs = _sanitize_generate_kwargs(transcribe_kwargs)
@@ -293,52 +298,76 @@ def transcribe_dataframe(
     if "generate_kwargs" in call_kwargs_base:
         call_kwargs_base["generate_kwargs"] = _sanitize_generate_kwargs(call_kwargs_base["generate_kwargs"])
 
-    index_iterable: Iterable[int] = range(len(audio_values))
+    prepared_inputs: list[Union[str, dict[str, object]]] = []
+    valid_indices: list[int] = []
+
+    for idx, entry in enumerate(audio_values):
+        if entry is None:
+            continue
+
+        if _InMemoryAudio is not None and isinstance(entry, _InMemoryAudio):
+            prepared_inputs.append(entry.to_whisper_input())
+            valid_indices.append(idx)
+            continue
+
+        audio_path = Path(str(entry))
+        if not audio_path.is_file():
+            message = f"Audio file not found: {audio_path}"
+            if skip_missing:
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
+                continue
+            raise FileNotFoundError(message)
+
+        if audio_path.suffix.lower() == ".nis":
+            message = (
+                f"Skipping NIST file '{audio_path.name}'. Convert it to WAV before running Whisper."
+            )
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+            continue
+
+        prepared_inputs.append(str(audio_path))
+        valid_indices.append(idx)
+
+    if not prepared_inputs:
+        return df_with_transcriptions
+
+    effective_batch_size = max(1, batch_size or 1)
+
+    progress_bar = None
     if show_progress:
         try:  # pragma: no cover - optional dependency
             from tqdm import tqdm
 
-            index_iterable = tqdm(index_iterable, desc="Transcribing", unit="file")
+            progress_bar = tqdm(total=len(prepared_inputs), desc="Transcribing", unit="file")
         except ImportError:
-            pass
+            progress_bar = None
 
-    for idx in index_iterable:
-        entry = audio_values[idx]
-        if entry is None:
-            continue
+    try:
+        for start in range(0, len(prepared_inputs), effective_batch_size):
+            end = min(start + effective_batch_size, len(prepared_inputs))
+            batch_inputs = prepared_inputs[start:end]
+            batch_indices = valid_indices[start:end]
 
-        descriptor = None
-        input_obj: Union[str, dict[str, object]]
+            call_kwargs = dict(call_kwargs_base)
+            call_kwargs.setdefault("batch_size", effective_batch_size)
 
-        if _InMemoryAudio is not None and isinstance(entry, _InMemoryAudio):
-            descriptor = entry.descriptor()
-            input_obj = entry.to_whisper_input()
-        else:
-            audio_path = Path(str(entry))
-            if not audio_path.is_file():
-                message = f"Audio file not found: {audio_path}"
-                if skip_missing:
-                    warnings.warn(message, RuntimeWarning, stacklevel=2)
-                    continue
-                raise FileNotFoundError(message)
+            result = whisper_pipe(batch_inputs, **call_kwargs)
+            if isinstance(result, dict):
+                result_items = [result]
+            else:
+                result_items = list(result)
 
-            if audio_path.suffix.lower() == ".nis":
-                message = (
-                    f"Skipping NIST file '{audio_path.name}'. Convert it to WAV before running Whisper."
-                )
-                warnings.warn(message, RuntimeWarning, stacklevel=2)
-                continue
+            for item, target_idx in zip(result_items, batch_indices):
+                text = item.get("text", "").strip()
+                transcripts[target_idx] = text or None
+                if segments_store is not None:
+                    segments_store[target_idx] = item.get("segments") or item.get("chunks")
 
-            descriptor = str(audio_path)
-            input_obj = descriptor
-
-        call_kwargs = dict(call_kwargs_base)
-        result = whisper_pipe(input_obj, **call_kwargs)
-
-        text = result.get("text", "").strip()
-        transcripts[idx] = text or None
-        if segments_store is not None:
-            segments_store[idx] = result.get("segments") or result.get("chunks")
+            if progress_bar is not None:
+                progress_bar.update(len(batch_indices))
+    finally:
+        if progress_bar is not None:
+            progress_bar.close()
 
     df_with_transcriptions[transcription_column] = transcripts
     if segments_store is not None:
@@ -457,6 +486,7 @@ def run_whisper_large_v3_pipeline(
     transcription_column: str = "whisper_large_v3_transcription",
     segments_column: Optional[str] = "whisper_large_v3_segments",
     wer_column: str = "whisper_large_v3_wer",
+    batch_size: Optional[int] = 16,
     show_progress: bool = True,
     skip_missing: bool = False,
     transcribe_kwargs: Optional[dict] = None,
@@ -481,6 +511,7 @@ def run_whisper_large_v3_pipeline(
         audio_column=audio_column,
         transcription_column=transcription_column,
         segments_column=segments_column,
+        batch_size=batch_size,
         show_progress=show_progress,
         skip_missing=skip_missing,
         transcribe_kwargs=transcribe_kwargs,

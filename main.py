@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 import pandas as pd
 
@@ -26,7 +26,13 @@ DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
 }
 
 
-def transcribe_dataset(dataset_key: str, model_type: str = "both") -> pd.DataFrame:
+def transcribe_dataset(
+    dataset_key: str,
+    model_type: str = "both",
+    *,
+    whisper_batch_size: Optional[int] = None,
+    parakeet_batch_size: Optional[int] = None,
+) -> pd.DataFrame:
     """Load a dataset, run ASR inference, and compute WER.
 
     Parameters
@@ -35,6 +41,10 @@ def transcribe_dataset(dataset_key: str, model_type: str = "both") -> pd.DataFra
         Dataset identifier.
     model_type:
         ASR model to use: "whisper", "parakeet", or "both".
+    whisper_batch_size:
+        Optional batch size override for Whisper inference. Defaults to 16 when not provided.
+    parakeet_batch_size:
+        Optional batch size override for Parakeet inference. Defaults to 16 when not provided.
 
     Returns
     -------
@@ -50,14 +60,17 @@ def transcribe_dataset(dataset_key: str, model_type: str = "both") -> pd.DataFra
 
     audio_column = "audio_source" if "audio_source" in df.columns and df["audio_source"].notna().any() else "audio_path"
 
+    whisper_batch = whisper_batch_size if whisper_batch_size and whisper_batch_size > 0 else 16
+    parakeet_batch = parakeet_batch_size if parakeet_batch_size and parakeet_batch_size > 0 else 16
+
     if model_type == "whisper":
-        return run_whisper_large_v3_pipeline(df, audio_column=audio_column)
+        return run_whisper_large_v3_pipeline(df, audio_column=audio_column, batch_size=whisper_batch)
     elif model_type == "parakeet":
-        return run_parakeet_pipeline(df, audio_column=audio_column)
+        return run_parakeet_pipeline(df, audio_column=audio_column, batch_size=parakeet_batch)
     elif model_type == "both":
         # Run both models and merge results
-        df = run_whisper_large_v3_pipeline(df, audio_column=audio_column)
-        df = run_parakeet_pipeline(df, audio_column=audio_column)
+        df = run_whisper_large_v3_pipeline(df, audio_column=audio_column, batch_size=whisper_batch)
+        df = run_parakeet_pipeline(df, audio_column=audio_column, batch_size=parakeet_batch)
         return df
     else:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose from: whisper, parakeet, both")
@@ -95,13 +108,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip writing output to disk; results will only be printed.",
     )
+    parser.add_argument(
+        "--whisper-batch-size",
+        type=int,
+        default=16,
+        help="Batch size for Whisper inference. Larger values improve GPU utilisation. Default: 16.",
+    )
+    parser.add_argument(
+        "--parakeet-batch-size",
+        type=int,
+        default=16,
+        help="Batch size for Parakeet inference. Larger values may require more GPU memory. Default: 16.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    df = transcribe_dataset(args.dataset, model_type=args.model)
+    df = transcribe_dataset(
+        args.dataset,
+        model_type=args.model,
+        whisper_batch_size=args.whisper_batch_size,
+        parakeet_batch_size=args.parakeet_batch_size,
+    )
 
     if args.no_write:
         print(df.head())
