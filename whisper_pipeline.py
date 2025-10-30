@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import warnings
 from pathlib import Path
@@ -283,8 +284,37 @@ def transcribe_dataframe(
 
     df_with_transcriptions = df.copy()
     audio_values = list(df_with_transcriptions[audio_column])
-    transcripts: list[Optional[str]] = [None] * len(audio_values)
-    segments_store: list[Optional[list]] | None = [None] * len(audio_values) if segments_column else None
+    row_count = len(audio_values)
+
+    def _is_missing(value: object) -> bool:
+        if value is None:
+            return True
+        try:
+            if math.isnan(value):  # type: ignore[arg-type]
+                return True
+        except TypeError:
+            pass
+        if isinstance(value, str):
+            trimmed = value.strip()
+            return trimmed == "" or trimmed in {"[]", "{}"}
+        if isinstance(value, (list, tuple, set)):
+            return len(value) == 0
+        return False
+
+    if transcription_column in df_with_transcriptions.columns:
+        existing_transcripts = df_with_transcriptions[transcription_column].tolist()
+        transcripts = [None if _is_missing(value) else value for value in existing_transcripts]
+    else:
+        transcripts = [None] * row_count
+
+    if segments_column:
+        if segments_column in df_with_transcriptions.columns:
+            existing_segments = df_with_transcriptions[segments_column].tolist()
+            segments_store = [None if _is_missing(value) else value for value in existing_segments]
+        else:
+            segments_store = [None] * row_count
+    else:
+        segments_store = None
 
     call_kwargs_base: dict[str, object] = {**transcribe_kwargs}
     if chunk_length_s is not None:
@@ -302,6 +332,14 @@ def transcribe_dataframe(
     valid_indices: list[int] = []
 
     for idx, entry in enumerate(audio_values):
+        existing_transcript = transcripts[idx] if idx < len(transcripts) else None
+        existing_segments = segments_store[idx] if segments_store is not None else None
+        needs_transcription = _is_missing(existing_transcript)
+        needs_segments = segments_store is not None and _is_missing(existing_segments)
+
+        if not (needs_transcription or needs_segments):
+            continue
+
         if entry is None:
             continue
 
@@ -450,14 +488,34 @@ def add_wer_column(
     df_with_wer = df.copy()
     scores: list[Optional[float]] = []
 
-    for truth, hypo in zip(df_with_wer[reference_column], df_with_wer[hypothesis_column]):
+    for idx, (truth, hypo) in enumerate(zip(df_with_wer[reference_column], df_with_wer[hypothesis_column])):
         if truth is None or hypo is None:
             scores.append(None)
             continue
 
         # Preprocess both texts before applying jiwer transforms
-        truth_preprocessed = _preprocess_text(str(truth))
-        hypo_preprocessed = _preprocess_text(str(hypo))
+        truth_raw = str(truth)
+        hypo_raw = str(hypo)
+        truth_preprocessed = _preprocess_text(truth_raw)
+        hypo_preprocessed = _preprocess_text(hypo_raw)
+
+        if not truth_preprocessed.strip():
+            warnings.warn(
+                f"Skipping WER computation for row {idx} because the reference transcription is empty after normalisation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            scores.append(None)
+            continue
+
+        if not hypo_preprocessed.strip():
+            warnings.warn(
+                f"Skipping WER computation for row {idx} because the hypothesis transcription is empty after normalisation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            scores.append(None)
+            continue
 
         if use_transform_args and transform is not None:
             scores.append(
@@ -469,7 +527,28 @@ def add_wer_column(
                 )
             )
         else:
-            scores.append(wer(_normalize_text(truth), _normalize_text(hypo)))
+            normalized_truth = _normalize_text(truth_raw)
+            normalized_hypo = _normalize_text(hypo_raw)
+
+            if not normalized_truth:
+                warnings.warn(
+                    f"Skipping WER computation for row {idx} because the reference transcription is empty after normalisation.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                scores.append(None)
+                continue
+
+            if not normalized_hypo:
+                warnings.warn(
+                    f"Skipping WER computation for row {idx} because the hypothesis transcription is empty after normalisation.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                scores.append(None)
+                continue
+
+            scores.append(wer(normalized_truth, normalized_hypo))
 
     df_with_wer[output_column] = scores
     return df_with_wer

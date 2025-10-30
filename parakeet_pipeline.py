@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import warnings
 from pathlib import Path
 import tempfile
@@ -152,14 +153,51 @@ def transcribe_dataframe(
 
     df_with_transcriptions = df.copy()
     audio_entries = list(df_with_transcriptions[audio_column])
-    transcripts: list[Optional[str]] = [None] * len(audio_entries)
-    segments_store: list[Optional[list]] | None = [None] * len(audio_entries) if segments_column else None
+    row_count = len(audio_entries)
+
+    def _is_missing(value: object) -> bool:
+        if value is None:
+            return True
+        try:
+            if math.isnan(value):  # type: ignore[arg-type]
+                return True
+        except TypeError:
+            pass
+        if isinstance(value, str):
+            trimmed = value.strip()
+            return trimmed == "" or trimmed in {"[]", "{}"}
+        if isinstance(value, (list, tuple, set)):
+            return len(value) == 0
+        return False
+
+    if transcription_column in df_with_transcriptions.columns:
+        existing_transcripts = df_with_transcriptions[transcription_column].tolist()
+        transcripts = [None if _is_missing(value) else value for value in existing_transcripts]
+    else:
+        transcripts = [None] * row_count
+
+    if segments_column:
+        if segments_column in df_with_transcriptions.columns:
+            existing_segments = df_with_transcriptions[segments_column].tolist()
+            segments_store = [None if _is_missing(value) else value for value in existing_segments]
+        else:
+            segments_store = [None] * row_count
+    else:
+        segments_store = None
 
     valid_indices: list[int] = []
     valid_paths: list[str] = []
     temp_files: list[Path] = []
 
     for idx, entry in enumerate(audio_entries):
+        existing_transcript = transcripts[idx] if idx < len(transcripts) else None
+        existing_segments = segments_store[idx] if segments_store is not None else None
+        needs_transcription = _is_missing(existing_transcript)
+        needs_segments = segments_store is not None and _is_missing(existing_segments)
+
+        if not (needs_transcription or needs_segments):
+            continue
+
         if entry is None:
             continue
 

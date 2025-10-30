@@ -26,12 +26,51 @@ DATASET_LOADERS: Dict[str, Callable[[], pd.DataFrame]] = {
 }
 
 
+def _merge_cached_results(df: pd.DataFrame, cache_path: Optional[Path]) -> pd.DataFrame:
+    """Merge previously cached results into the freshly loaded dataset."""
+    if cache_path is None or not cache_path.is_file():
+        return df
+
+    cached_df = pd.read_csv(cache_path)
+    if cached_df.empty or "audio_path" not in cached_df.columns:
+        return df
+
+    base = df.set_index("audio_path", drop=False)
+    cached = cached_df.drop_duplicates(subset=["audio_path"]).set_index("audio_path")
+
+    for column in cached.columns:
+        if column == "audio_path":
+            continue
+        cached_series = cached[column].reindex(base.index)
+        if column in base.columns:
+            base[column] = base[column].combine_first(cached_series)
+        else:
+            base[column] = cached_series
+
+    return base.reset_index(drop=True)
+
+
+def _prepare_serializable(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy suitable for serialization (drops in-memory audio objects)."""
+    drop_columns = [col for col in ("audio_source",) if col in df.columns]
+    if drop_columns:
+        return df.drop(columns=drop_columns)
+    return df.copy()
+
+
+def _write_cache(df: pd.DataFrame, cache_path: Path) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    serializable_df = _prepare_serializable(df)
+    serializable_df.to_csv(cache_path, index=False)
+
+
 def transcribe_dataset(
     dataset_key: str,
     model_type: str = "both",
     *,
     whisper_batch_size: Optional[int] = None,
     parakeet_batch_size: Optional[int] = None,
+    cache_path: Optional[Path] = None,
 ) -> pd.DataFrame:
     """Load a dataset, run ASR inference, and compute WER.
 
@@ -45,6 +84,9 @@ def transcribe_dataset(
         Optional batch size override for Whisper inference. Defaults to 16 when not provided.
     parakeet_batch_size:
         Optional batch size override for Parakeet inference. Defaults to 16 when not provided.
+    cache_path:
+        Optional path to an existing CSV cache. When provided, previously computed
+        results are merged in and intermediate progress is written to this path.
 
     Returns
     -------
@@ -58,19 +100,31 @@ def transcribe_dataset(
     if df.empty:
         raise RuntimeError(f"Dataset '{dataset_key}' returned an empty DataFrame.")
 
+    df = _merge_cached_results(df, cache_path)
+
     audio_column = "audio_source" if "audio_source" in df.columns and df["audio_source"].notna().any() else "audio_path"
 
     whisper_batch = whisper_batch_size if whisper_batch_size and whisper_batch_size > 0 else 16
     parakeet_batch = parakeet_batch_size if parakeet_batch_size and parakeet_batch_size > 0 else 16
 
     if model_type == "whisper":
-        return run_whisper_large_v3_pipeline(df, audio_column=audio_column, batch_size=whisper_batch)
+        df = run_whisper_large_v3_pipeline(df, audio_column=audio_column, batch_size=whisper_batch)
+        if cache_path is not None:
+            _write_cache(df, cache_path)
+        return df
     elif model_type == "parakeet":
-        return run_parakeet_pipeline(df, audio_column=audio_column, batch_size=parakeet_batch)
+        df = run_parakeet_pipeline(df, audio_column=audio_column, batch_size=parakeet_batch)
+        if cache_path is not None:
+            _write_cache(df, cache_path)
+        return df
     elif model_type == "both":
         # Run both models and merge results
         df = run_whisper_large_v3_pipeline(df, audio_column=audio_column, batch_size=whisper_batch)
+        if cache_path is not None:
+            _write_cache(df, cache_path)
         df = run_parakeet_pipeline(df, audio_column=audio_column, batch_size=parakeet_batch)
+        if cache_path is not None:
+            _write_cache(df, cache_path)
         return df
     else:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose from: whisper, parakeet, both")
@@ -78,7 +132,8 @@ def transcribe_dataset(
 
 def write_output(df: pd.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
+    serializable_df = _prepare_serializable(df)
+    serializable_df.to_csv(output_path, index=False)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -126,19 +181,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
+    default_output_dir = Path(OUTPUT_PATH) if OUTPUT_PATH else Path("outputs")
+    output_path = args.output or default_output_dir / f"{args.dataset}.csv"
+    cache_path = None if args.no_write else output_path
+
     df = transcribe_dataset(
         args.dataset,
         model_type=args.model,
         whisper_batch_size=args.whisper_batch_size,
         parakeet_batch_size=args.parakeet_batch_size,
+        cache_path=cache_path,
     )
 
     if args.no_write:
         print(df.head())
     else:
-        # Use OUTPUT_PATH from paths.py if available, otherwise default to "outputs"
-        default_output_dir = Path(OUTPUT_PATH) if OUTPUT_PATH else Path("outputs")
-        output_path = args.output or default_output_dir / f"{args.dataset}.csv"
         write_output(df, output_path)
         print(f"Wrote results to {output_path}")
 
