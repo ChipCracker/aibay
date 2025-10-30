@@ -11,6 +11,19 @@ import pandas as pd
 
 _UNSUPPORTED_GENERATE_KWARGS = {"cache_dir"}
 
+_RE_VERBMOBIL_UMLAUT = re.compile(r'"([AOUaou])')
+_RE_VERBMOBIL_ESZETT = re.compile(r'"([sS])')
+_RE_VERBMOBIL_WHITESPACE = re.compile(r"\s+")
+
+_VERBMOBIL_UMLAUT_MAP = {
+    "a": "ä",
+    "A": "Ä",
+    "o": "ö",
+    "O": "Ö",
+    "u": "ü",
+    "U": "Ü",
+}
+
 
 def _sanitize_generate_kwargs(kwargs: Optional[dict] = None) -> dict:
     if not kwargs:
@@ -130,6 +143,28 @@ def _remove_punctuation(text: str) -> str:
     import string
     # Remove all punctuation
     return text.translate(str.maketrans("", "", string.punctuation))
+
+
+def _restore_verbmobil_markup(text: str) -> str:
+    """Convert Verbmobil-style markup (e.g. f\"ur) into canonical Unicode text."""
+    if not text:
+        return text
+
+    def _replace_umlaut(match: re.Match[str]) -> str:
+        char = match.group(1)
+        return _VERBMOBIL_UMLAUT_MAP.get(char, char)
+
+    def _replace_eszett(match: re.Match[str]) -> str:
+        return "ß"
+
+    value = text.replace("``", '"').replace("''", '"')
+    value = _RE_VERBMOBIL_UMLAUT.sub(_replace_umlaut, value)
+    value = _RE_VERBMOBIL_ESZETT.sub(_replace_eszett, value)
+    value = value.replace("▁", " ")
+    value = value.replace("_", " ")
+    value = value.replace("|", " ")
+    value = _RE_VERBMOBIL_WHITESPACE.sub(" ", value)
+    return value.strip()
 
 
 def load_whisper_model(
@@ -435,8 +470,9 @@ def add_wer_column(
     from jiwer import wer
 
     def _preprocess_text(text: str) -> str:
-        """Apply custom preprocessing: lowercase, normalize numbers, remove punctuation."""
-        value = str(text).lower()
+        """Apply custom preprocessing: normalize Verbmobil markup, lowercase, numbers, punctuation."""
+        value = _restore_verbmobil_markup(str(text))
+        value = value.lower()
         value = _normalize_german_numbers(value)
         value = _remove_punctuation(value)
         return value

@@ -149,7 +149,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         choices=["whisper", "parakeet", "both"],
-        default="whisper",
+        default="both",
         help="ASR model to use: whisper (Whisper Large V3), parakeet (Parakeet TDT v3), or both. Default: whisper.",
     )
     parser.add_argument(
