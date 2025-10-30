@@ -319,7 +319,7 @@ def run_parakeet_pipeline(
     batch_size: int = 16,
     show_progress: bool = True,
     skip_missing: bool = False,
-    enable_timestamps: bool = True,
+    enable_timestamps: bool = False,
     enable_long_form: bool = True,
     normalizer: Optional["jiwer.Compose"] = None,
 ) -> pd.DataFrame:
